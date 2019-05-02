@@ -16,34 +16,25 @@
 
 package org.forgerock.am.plugins.nashville;
 
-import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.forgerock.openam.auth.node.api.SharedStateConstants.USERNAME;
 
-import java.io.IOException;
-import java.net.URISyntaxException;
 import java.util.Optional;
 
 import javax.inject.Inject;
 import javax.security.auth.callback.ConfirmationCallback;
 import javax.security.auth.callback.TextOutputCallback;
 
-import org.forgerock.http.Client;
-import org.forgerock.http.protocol.Request;
-import org.forgerock.openam.annotations.sm.Attribute;
 import org.forgerock.openam.auth.node.api.Action;
 import org.forgerock.openam.auth.node.api.Node;
 import org.forgerock.openam.auth.node.api.NodeProcessException;
 import org.forgerock.openam.auth.node.api.SingleOutcomeNode;
 import org.forgerock.openam.auth.node.api.TreeContext;
 import org.forgerock.openam.core.realms.Realm;
-import org.forgerock.openam.sm.AnnotatedServiceRegistry;
 import org.forgerock.util.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.inject.assistedinject.Assisted;
-import com.iplanet.sso.SSOException;
-import com.sun.identity.sm.SMSException;
 
 /**
  * A node that checks to see if zero-page login headers have specified username and whether that username is in a group
@@ -54,9 +45,8 @@ import com.sun.identity.sm.SMSException;
 public class NashvilleNode extends SingleOutcomeNode {
 
     private final Logger logger = LoggerFactory.getLogger(NashvilleNode.class);
-    private final Config config;
-    private final Client httpClient;
-    private final String serviceUrl;
+    private final Greetings greetings;
+    private final Realm realm;
 
     /**
      * Configuration for the node.
@@ -69,20 +59,11 @@ public class NashvilleNode extends SingleOutcomeNode {
      * Create the node using Guice injection. Just-in-time bindings can be used to obtain instances of other classes
      * from the plugin.
      *
-     * @param config The service config.
      */
     @Inject
-    public NashvilleNode(@Assisted Config config, Client httpClient, @Assisted Realm realm,
-            AnnotatedServiceRegistry serviceRegistry) throws NodeProcessException {
-        this.config = config;
-        this.httpClient = httpClient;
-        try {
-            this.serviceUrl = serviceRegistry.getRealmSingleton(GreetingsService.class, realm)
-                    .map(GreetingsService::serviceUrl)
-                    .orElseThrow(() -> new NodeProcessException("Greetings service is not configured in " + realm));
-        } catch (SSOException | SMSException e) {
-            throw new NodeProcessException(e);
-        }
+    public NashvilleNode(@Assisted Realm realm, Greetings greetings) {
+        this.realm = realm;
+        this.greetings = greetings;
     }
 
     @Override
@@ -95,23 +76,10 @@ public class NashvilleNode extends SingleOutcomeNode {
         if (Strings.isNullOrEmpty(username)) {
             throw new NodeProcessException("Node needs to be used after a username has been identified");
         }
-        try {
-            byte[] message = httpClient.send(new Request().setMethod("GET").setUri(serviceUrl + "?username=" + username))
-                    .getOrThrow()
-                    .getEntity()
-                    .getBytes();
-            if (message.length == 0) {
-                return goToNext().build();
-            }
-            return Action.send(
-                    new TextOutputCallback(TextOutputCallback.INFORMATION, new String(message, UTF_8)),
-                    new ConfirmationCallback(ConfirmationCallback.INFORMATION, new String[]{"Ok"}, 0)
-            ).build();
-        } catch (IOException | URISyntaxException e) {
-            throw new NodeProcessException(e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new NodeProcessException("Interrupted");
-        }
+        Optional<String> message = greetings.getGreeting(realm, username);
+        return message.map(s -> Action.send(
+                new TextOutputCallback(TextOutputCallback.INFORMATION, s),
+                new ConfirmationCallback(ConfirmationCallback.INFORMATION, new String[]{"Ok"}, 0)
+        )).orElseGet(this::goToNext).build();
     }
 }
