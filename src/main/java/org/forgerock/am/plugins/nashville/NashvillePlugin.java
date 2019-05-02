@@ -51,6 +51,7 @@ public class NashvillePlugin extends AbstractNodeAmPlugin {
 	@Override
 	public void onInstall() throws PluginException {
 		super.onInstall();
+		pluginTools.installService(GreetingsService.class);
 	}
 
     /** 
@@ -64,6 +65,7 @@ public class NashvillePlugin extends AbstractNodeAmPlugin {
 	@Override
 	public void onStartup(StartupType startupType) throws PluginException {
 		super.onStartup(startupType);
+        pluginTools.startService(GreetingsService.class);
 	}
 
     /** 
