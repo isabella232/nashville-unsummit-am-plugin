@@ -27,6 +27,14 @@ app.use(logger('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
+app.use(function(req, res, next) {
+  if (!req.headers.authorization || req.headers.authorization.indexOf('ApiKey ') !== 0) {
+    return res.status(401).header("WWW-Authenticate", "ApiKey")
+  } else {
+    console.log("Authorized request:", req.headers.authorization);
+  }
+  next();
+});
 
 app.use('/', indexRouter);
 

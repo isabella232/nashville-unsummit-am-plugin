@@ -17,6 +17,7 @@
 package org.forgerock.am.plugins.nashville;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.forgerock.am.plugins.nashville.NashvilleSecretIdProvider.GREETINGS_API_KEY;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
@@ -27,9 +28,14 @@ import javax.inject.Inject;
 import javax.inject.Singleton;
 
 import org.forgerock.http.Client;
+import org.forgerock.http.header.AuthorizationHeader;
+import org.forgerock.http.header.MalformedHeaderException;
 import org.forgerock.http.protocol.Request;
 import org.forgerock.openam.core.realms.Realm;
+import org.forgerock.openam.secrets.Secrets;
 import org.forgerock.openam.sm.AnnotatedServiceRegistry;
+import org.forgerock.secrets.GenericSecret;
+import org.forgerock.secrets.NoSuchSecretException;
 
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
@@ -43,11 +49,13 @@ public class Greetings {
     private final LoadingCache<Realm, RealmGreetingService> realmServices;
     private final Client httpClient;
     private final AnnotatedServiceRegistry serviceRegistry;
+    private final Secrets secrets;
 
     @Inject
-    public Greetings(Client httpClient, AnnotatedServiceRegistry serviceRegistry) {
+    public Greetings(Client httpClient, AnnotatedServiceRegistry serviceRegistry, Secrets secrets) {
         this.httpClient = httpClient;
         this.serviceRegistry = serviceRegistry;
+        this.secrets = secrets;
         realmServices = CacheBuilder.newBuilder()
                 .build(CacheLoader.from(this::init));
     }
@@ -55,7 +63,7 @@ public class Greetings {
     private RealmGreetingService init(Realm realm) {
         try {
             String serviceUrl = serviceRegistry.getRealmSingleton(GreetingsService.class, realm).get().serviceUrl();
-            return new RealmGreetingService(httpClient, serviceUrl);
+            return new RealmGreetingService(httpClient, serviceUrl, secrets, realm);
         } catch (SMSException | SSOException e) {
             throw new RuntimeException(e);
         }
@@ -69,10 +77,14 @@ public class Greetings {
         private final LoadingCache<String, Optional<String>> greetingsCache;
         private final Client httpClient;
         private final String serviceUrl;
+        private final Secrets secrets;
+        private final Realm realm;
 
-        RealmGreetingService(Client httpClient, String serviceUrl) {
+        RealmGreetingService(Client httpClient, String serviceUrl, Secrets secrets, Realm realm) {
             this.httpClient = httpClient;
             this.serviceUrl = serviceUrl;
+            this.secrets = secrets;
+            this.realm = realm;
             greetingsCache = CacheBuilder.newBuilder()
                     .expireAfterWrite(Duration.ofHours(1))
                     .build(CacheLoader.from(this::loadGreeting));
@@ -81,15 +93,29 @@ public class Greetings {
         private Optional<String> loadGreeting(String username) {
             String uri = serviceUrl + "?username=" + username;
             try {
-                byte[] message = httpClient.send(new Request().setMethod("GET").setUri(uri))
-                        .getOrThrow()
-                        .getEntity()
-                        .getBytes();
-                if (message.length == 0) {
-                    return Optional.empty();
-                }
-                return Optional.of(new String(message, UTF_8));
-            } catch (IOException | URISyntaxException e) {
+                GenericSecret secret = secrets.getRealmSecrets(realm).getActiveSecret(GREETINGS_API_KEY).getOrThrow();
+                return secret.revealAsUtf8(key -> {
+                    try {
+                        Request request = new Request()
+                                .setMethod("GET")
+                                .setUri(uri)
+                                .addHeaders(AuthorizationHeader.valueOf("ApiKey " + String.valueOf(key)));
+                        byte[] message = httpClient.send(request)
+                                .getOrThrow()
+                                .getEntity()
+                                .getBytes();
+                        if (message.length == 0) {
+                            return Optional.empty();
+                        }
+                        return Optional.of(new String(message, UTF_8));
+                    } catch (IOException | URISyntaxException | MalformedHeaderException e) {
+                        throw new RuntimeException(e);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("Interrupted");
+                    }
+                });
+            } catch (NoSuchSecretException e) {
                 throw new RuntimeException(e);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
